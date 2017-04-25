@@ -70,6 +70,10 @@ public class JsonRpcResult {
         }
     }
 
+    public JsonRpcResult() {
+        this.result = EMPTY_OBJECT;
+    }
+
     public boolean isEmptyOrAbsent() {
         return (result == null || EMPTY_OBJECT.equals(result)) && (resultList == null || resultList.isEmpty());
     }
