@@ -30,6 +30,7 @@ interface IPageParam {
 const LINK = 'link';
 const MAX_ITEMS = 'maxItems';
 const SKIP_COUNT = 'skipCount';
+const MAX_ITEMS_VAL = 15;
 
 interface IPageDataResource<T> extends ng.resource.IResourceClass<T> {
   getPageData(): ng.resource.IResource<T>;
@@ -44,8 +45,6 @@ export class PageObjectResource {
   private $q: ng.IQService;
   private $resource: ng.resource.IResourceService;
   private remoteDataAPI: IPageDataResource<any>;
-  private maxItems: number;
-  private skipCount: number;
 
   private pagesInfo: che.IPageInfo;
   private data: che.IRequestData;
@@ -74,9 +73,7 @@ export class PageObjectResource {
     });
 
     // set default values
-    this.pagesInfo = {countPages: 0, currentPageNumber: 0};
-    this.maxItems = 30;
-    this.skipCount = 0;
+    this.pagesInfo = {countPages: 0, currentPageNumber: 1};
   }
 
   _getPageFromResponse(data: Array<any>, headersLink: string): ITransformResponse {
@@ -128,9 +125,9 @@ export class PageObjectResource {
     };
   }
 
-  _updateCurrentPage(objects?: Array<any>): void {
+  _updateCurrentPageData(data?: ITransformResponse): void {
     this.pageObjects.length = 0;
-    let pageData = angular.isDefined(objects) ? objects : this.objectPagesMap.get(this.pagesInfo.currentPageNumber);
+    let pageData = angular.isDefined(data) ? data : this.objectPagesMap.get(this.pagesInfo.currentPageNumber);
     if (!pageData || !pageData.objects) {
       return;
     }
@@ -143,8 +140,9 @@ export class PageObjectResource {
 
   /**
    * Update page links by relative direction ('first', 'prev', 'next', 'last')
+   * @param data {ITransformResponse}
    */
-  _updatePagesData(data: ITransformResponse): void {
+  _updatePageLinks(data: ITransformResponse): void {
     if (!data.links) {
       return;
     }
@@ -166,58 +164,52 @@ export class PageObjectResource {
       let pageParam = this._getPageParamByLink(lastPageLink);
       this.pagesInfo.countPages = pageParam.skipCount / pageParam.maxItems + 1;
 
-      let lastPageData: IPageData = this.objectPagesMap.get(this.pagesInfo.countPages);
-      if (lastPageData) {
+      if (this.objectPagesMap.has(this.pagesInfo.countPages)) {
+        let lastPageData: IPageData = this.objectPagesMap.get(this.pagesInfo.countPages);
         lastPageData.link = lastPageLink;
-      } else {
-        lastPageData = {link: lastPageLink};
-      }
-      if (this.pagesInfo.currentPageNumber === this.pagesInfo.countPages) {
         lastPageData.objects = data.objects;
+      } else {
+        this.objectPagesMap.set(this.pagesInfo.countPages, {link: lastPageLink, objects: data.objects});
       }
-      this.objectPagesMap.set(this.pagesInfo.countPages, lastPageData);
     }
     let prevPageLink = data.links.get(RemotePageLabels.PREVIOUS);
     let prevPageNumber = this.pagesInfo.currentPageNumber - 1;
     if (prevPageNumber > 0 && prevPageLink) {
-      let prevPageData: IPageData = this.objectPagesMap.get(prevPageNumber);
-      if (prevPageData) {
-        prevPageData.link = prevPageLink;
+      if (this.objectPagesMap.has(prevPageNumber)) {
+        this.objectPagesMap.get(prevPageNumber).link = prevPageLink;
       } else {
-        prevPageData = {link: prevPageLink};
-        this.objectPagesMap.set(prevPageNumber, prevPageData);
+        this.objectPagesMap.set(prevPageNumber, {link: prevPageLink});
       }
     }
     let nextPageLink = data.links.get(RemotePageLabels.NEXT);
     let nextPageNumber = this.pagesInfo.currentPageNumber + 1;
     if (nextPageLink) {
-      let nextPageData: IPageData = this.objectPagesMap.get(nextPageNumber);
-      if (nextPageData) {
-        nextPageData.link = nextPageLink;
+      if (this.objectPagesMap.has(nextPageNumber)) {
+        this.objectPagesMap.get(nextPageNumber).link = nextPageLink;
       } else {
-        nextPageData = {link: nextPageLink};
-        this.objectPagesMap.set(prevPageNumber, nextPageData);
+        this.objectPagesMap.set(prevPageNumber, {link: nextPageLink});
       }
     }
   }
 
   /**
-   * Ask for loading the objects in asynchronous way
-   * If there are no changes, it's not updated
+   * Ask for loading first page objects in asynchronous way
    * @param maxItems - the max number of items to return
-   * @returns {*} the promise
+   * @returns {ng.IPromise<Array<any>>}
    */
-  fetchObjects(maxItems?: number): ng.IPromise<any> {
+  fetchObjects(maxItems?: number): ng.IPromise<Array<any>> {
     if (maxItems) {
       this.data.maxItems = maxItems.toString();
+    } else {
+      this.data.maxItems = MAX_ITEMS_VAL;
     }
     this.data.skipCount = '0';
+    this.pagesInfo.currentPageNumber = 1;
     let promise = this.remoteDataAPI.getPageData().$promise;
 
-    return promise.then((data: any) => {
-      this.pagesInfo.currentPageNumber = 1;
-      this._updateCurrentPage(data);
-      this._updatePagesData(data);
+    return promise.then((data: ITransformResponse) => {
+      this._updateCurrentPageData(data);
+      this._updatePageLinks(data);
       return this.getPageObjects();
     }, (error: any) => {
       if (error && error.status === 304) {
@@ -228,12 +220,11 @@ export class PageObjectResource {
   }
 
   /**
-   * Ask for loading the page objects in asynchronous way
-   * If there are no changes, it's not updated
-   * @param pageKey {string} - the key of page ('first', 'prev', 'next', 'last'  or '1', '2', '3' ...)
-   * @returns {ng.IPromise<any>} the promise
+   * Ask for loading any page objects depends on page key ('first', 'prev', 'next', 'last'  or '1', '2', '3' ...)
+   * @param pageKey {string} - the key of page
+   * @returns {ng.IPromise<Array<any>>} the promise
    */
-  fetchPageObjects(pageKey: string): ng.IPromise<any> {
+  fetchPageObjects(pageKey: string): ng.IPromise<Array<any>> {
     let deferred = this.$q.defer();
     let pageNumber;
     switch (pageKey) {
@@ -262,13 +253,13 @@ export class PageObjectResource {
 
       let promise = this.remoteDataAPI.getPageData().$promise;
       promise.then((data: ITransformResponse) => {
-        this._updatePagesData(data);
+        this._updatePageLinks(data);
         pageData.objects = data.objects;
-        this._updateCurrentPage();
+        this._updateCurrentPageData();
         deferred.resolve(this.getPageObjects());
       }, (error: any) => {
         if (error && error.status === 304) {
-          this._updateCurrentPage();
+          this._updateCurrentPageData();
           deferred.resolve(this.getPageObjects());
         }
         deferred.reject(error);
